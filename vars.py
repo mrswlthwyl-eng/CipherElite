@@ -51,3 +51,6 @@ if LOG_CHAT_ID == 0:
     print("Warning: LOG_CHAT_ID is not set. Please update .env with a valid logger group ID.")
 if not MONGO_URI:
     print("Info: MONGO_URI not set. Using local JSON storage. Set MONGO_URI for cloud database.")
+# Keywords for monitoring
+ALIVE_TEXT = ["توصيل", "مشاوير", "سيارة", "يوصل", "احتاج", "موصلات"]
+KEYWORDS = ["توصيل", "مشاوير", "سيارة", "يوصل", "احتاج"]
