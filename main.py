@@ -2,12 +2,12 @@
 # main.py
 # CipherElite - Telegram Delivery Monitor
 #
-# يعمل مع vars.py الخاص بـ CipherElite
+# يعتمد على vars.py الخاص بـ CipherElite
 # حساب Telegram واحد
 # مراقبة المجموعات
 # فلترة طلبات التوصيل
 # إرسال الطلبات إلى LOG_CHAT_ID
-# اسم الطالب + ID قابلان للضغط
+# اسم المستخدم + ID قابلان للضغط
 # رابط الرسالة الأصلية
 # Auto Reconnect
 # ============================================================
@@ -36,7 +36,6 @@ from vars import (
     API_HASH,
     ELITE_SESSION,
     LOG_CHAT_ID,
-    KEYWORDS,
 )
 
 
@@ -60,25 +59,22 @@ logger = logging.getLogger(
 
 if not API_ID:
     raise RuntimeError(
-        "❌ API_ID غير موجود."
+        "❌ API_ID غير موجود في vars.py / Environment Variables"
     )
 
 if not API_HASH:
     raise RuntimeError(
-        "❌ API_HASH غير موجود."
+        "❌ API_HASH غير موجود في vars.py / Environment Variables"
     )
 
-if (
-    not ELITE_SESSION
-    or ELITE_SESSION == "INVALID_SESSION"
-):
+if not ELITE_SESSION:
     raise RuntimeError(
-        "❌ ELITE_SESSION غير موجودة."
+        "❌ ELITE_SESSION غير موجودة في vars.py / Environment Variables"
     )
 
 if not LOG_CHAT_ID:
     raise RuntimeError(
-        "❌ LOG_CHAT_ID غير موجود."
+        "❌ LOG_CHAT_ID غير موجود في vars.py / Environment Variables"
     )
 
 
@@ -86,43 +82,53 @@ if not LOG_CHAT_ID:
 # KEYWORDS
 # ============================================================
 
-DELIVERY_KEYWORDS = [
+KEYWORDS = [
     "توصيل",
     "مشوار",
+    "مشاوير",
     "من _الى",
+    "من الى",
     "احتاج سيارة",
     "احتاج سواق",
+    "احتاج سائق",
     "شهري",
     "مندوب",
     "سواق",
     "سواقه",
+    "سائق",
+    "سائقه",
     "تاكسي",
     "سيارة",
     "باص",
     "نقل",
     "ابي توصيل",
+    "ابغى توصيل",
+    "أبي توصيل",
+    "أبغى توصيل",
     "تواصل",
     "من رايحة",
     "تعرفون باص",
-    "سواقة",
     "تعرفون سواق",
+    "تعرفون سائق",
     "ابغى باص",
+    "أبغى باص",
     "توصيل طلب",
+    "يوصلني",
     "يوصلي",
+    "يوديني",
     "يوديني مشوار",
 ]
 
-# إذا أردت لاحقًا استخدام KEYWORDS من vars.py
-# بدلاً من القائمة أعلاه، غيّر هذا إلى:
-#
-# DELIVERY_KEYWORDS = KEYWORDS
-
 
 # ============================================================
-# TEXT NORMALIZATION
+# NORMALIZATION
 # ============================================================
 
 def normalize_text(text):
+    """
+    توحيد بعض الحروف العربية حتى يعمل الفلتر
+    مع اختلافات الكتابة.
+    """
 
     if not text:
         return ""
@@ -133,17 +139,25 @@ def normalize_text(text):
         "أ": "ا",
         "إ": "ا",
         "آ": "ا",
+        "ٱ": "ا",
         "ة": "ه",
         "ى": "ي",
     }
 
     for old, new in replacements.items():
-
         text = text.replace(
             old,
             new,
         )
 
+    # إزالة التشكيل
+    text = re.sub(
+        r"[\u064B-\u065F\u0670]",
+        "",
+        text,
+    )
+
+    # توحيد المسافات
     text = re.sub(
         r"\s+",
         " ",
@@ -153,28 +167,20 @@ def normalize_text(text):
     return text.strip()
 
 
-# ============================================================
-# NORMALIZED KEYWORDS
-# ============================================================
-
 NORMALIZED_KEYWORDS = [
-
     (
         original,
         normalize_text(original),
     )
-
-    for original in DELIVERY_KEYWORDS
-
+    for original in KEYWORDS
     if original
 ]
 
 
-# ============================================================
-# MATCH KEYWORDS
-# ============================================================
-
 def matched_keywords(text):
+    """
+    إرجاع الكلمات التي تطابقت مع الرسالة.
+    """
 
     normalized = normalize_text(
         text
@@ -185,22 +191,21 @@ def matched_keywords(text):
 
     matches = []
 
-    for (
-        original,
-        normalized_keyword,
-    ) in NORMALIZED_KEYWORDS:
+    for original, keyword in NORMALIZED_KEYWORDS:
 
-        if not normalized_keyword:
+        if not keyword:
             continue
 
-        if normalized_keyword in normalized:
+        if keyword in normalized:
 
             matches.append(
                 original
             )
 
     return list(
-        dict.fromkeys(matches)
+        dict.fromkeys(
+            matches
+        )
     )
 
 
@@ -209,29 +214,18 @@ def matched_keywords(text):
 # ============================================================
 
 client = TelegramClient(
-
     StringSession(
         ELITE_SESSION
     ),
-
     API_ID,
-
     API_HASH,
-
     connection_retries=10,
-
     retry_delay=3,
-
     request_retries=5,
-
     auto_reconnect=True,
-
     sequential_updates=False,
-
     catch_up=True,
-
     flood_sleep_threshold=60,
-
     entity_cache_limit=10000,
 )
 
@@ -244,7 +238,7 @@ send_lock = asyncio.Lock()
 
 
 # ============================================================
-# GET USER INFORMATION
+# USER INFORMATION
 # ============================================================
 
 def get_user_information(sender):
@@ -258,12 +252,20 @@ def get_user_information(sender):
         )
 
 
+    # --------------------------------------------------------
+    # USER ID
+    # --------------------------------------------------------
+
     user_id = getattr(
         sender,
         "id",
         0,
     )
 
+
+    # --------------------------------------------------------
+    # NAME
+    # --------------------------------------------------------
 
     first_name = (
         getattr(
@@ -274,7 +276,6 @@ def get_user_information(sender):
         or ""
     )
 
-
     last_name = (
         getattr(
             sender,
@@ -283,7 +284,6 @@ def get_user_information(sender):
         )
         or ""
     )
-
 
     full_name = (
         f"{first_name} {last_name}"
@@ -296,7 +296,7 @@ def get_user_information(sender):
 
 
     # --------------------------------------------------------
-    # CLICKABLE NAME + ID
+    # CLICKABLE USER
     # --------------------------------------------------------
 
     if user_id:
@@ -355,7 +355,6 @@ def get_user_information(sender):
         clickable_name,
         clickable_id,
         username_line,
-        user_id,
     )
 
 
@@ -374,16 +373,16 @@ def get_message_link(
         return None
 
 
+    # --------------------------------------------------------
+    # PUBLIC GROUP / CHANNEL
+    # --------------------------------------------------------
+
     chat_username = getattr(
         chat,
         "username",
         None,
     )
 
-
-    # --------------------------------------------------------
-    # PUBLIC GROUP
-    # --------------------------------------------------------
 
     if chat_username:
 
@@ -463,24 +462,19 @@ def build_message(
         clickable_name,
         clickable_id,
         username_line,
-        user_id,
     ) = get_user_information(
         sender
     )
 
 
     # --------------------------------------------------------
-    # MESSAGE LINK
+    # SOURCE LINK
     # --------------------------------------------------------
 
     message_link = get_message_link(
-
         chat,
-
         event.chat_id,
-
         event.id,
-
     )
 
 
@@ -566,18 +560,18 @@ async def process_message(event):
 
     try:
 
-        # ====================================================
+        # ----------------------------------------------------
         # GROUPS ONLY
-        # ====================================================
+        # ----------------------------------------------------
 
         if not event.is_group:
 
             return
 
 
-        # ====================================================
-        # TEXT
-        # ====================================================
+        # ----------------------------------------------------
+        # MESSAGE TEXT
+        # ----------------------------------------------------
 
         text = (
             event.raw_text
@@ -590,9 +584,9 @@ async def process_message(event):
             return
 
 
-        # ====================================================
+        # ----------------------------------------------------
         # FILTER
-        # ====================================================
+        # ----------------------------------------------------
 
         matches = matched_keywords(
             text
@@ -604,9 +598,9 @@ async def process_message(event):
             return
 
 
-        # ====================================================
-        # GET SENDER
-        # ====================================================
+        # ----------------------------------------------------
+        # SENDER
+        # ----------------------------------------------------
 
         sender = getattr(
             event,
@@ -623,19 +617,14 @@ async def process_message(event):
                     await event.get_sender()
                 )
 
-            except Exception as e:
-
-                logger.warning(
-                    "⚠️ تعذر جلب المرسل: %s",
-                    e,
-                )
+            except Exception:
 
                 sender = None
 
 
-        # ====================================================
+        # ----------------------------------------------------
         # IGNORE BOTS
-        # ====================================================
+        # ----------------------------------------------------
 
         if sender:
 
@@ -648,9 +637,9 @@ async def process_message(event):
                 return
 
 
-        # ====================================================
-        # GET CHAT
-        # ====================================================
+        # ----------------------------------------------------
+        # CHAT
+        # ----------------------------------------------------
 
         chat = getattr(
             event,
@@ -667,38 +656,29 @@ async def process_message(event):
                     await event.get_chat()
                 )
 
-            except Exception as e:
-
-                logger.warning(
-                    "⚠️ تعذر جلب المجموعة: %s",
-                    e,
-                )
+            except Exception:
 
                 chat = None
 
 
-        # ====================================================
+        # ----------------------------------------------------
         # BUILD
-        # ====================================================
+        # ----------------------------------------------------
 
-        final_message = build_message(
+        formatted = build_message(
 
             event,
-
             text,
-
             matches,
-
             sender,
-
             chat,
 
         )
 
 
-        # ====================================================
+        # ----------------------------------------------------
         # SEND
-        # ====================================================
+        # ----------------------------------------------------
 
         async with send_lock:
 
@@ -706,7 +686,7 @@ async def process_message(event):
 
                 LOG_CHAT_ID,
 
-                final_message,
+                formatted,
 
                 parse_mode="html",
 
@@ -715,9 +695,9 @@ async def process_message(event):
             )
 
 
-        # ====================================================
+        # ----------------------------------------------------
         # LOG
-        # ====================================================
+        # ----------------------------------------------------
 
         elapsed = (
             time.perf_counter()
@@ -727,19 +707,11 @@ async def process_message(event):
 
         logger.info(
 
-            "✅ SENT | "
-            "chat=%s | "
-            "message=%s | "
-            "keywords=%s | "
-            "%.3fs",
-
-            event.chat_id,
-
-            event.id,
-
-            matches,
-
-            elapsed,
+            f"✅ SENT | "
+            f"chat={event.chat_id} | "
+            f"message={event.id} | "
+            f"keywords={matches} | "
+            f"time={elapsed:.3f}s"
 
         )
 
@@ -752,8 +724,10 @@ async def process_message(event):
         )
 
         logger.warning(
-            "⏳ FloodWait: %ss",
-            seconds,
+
+            f"⏳ FloodWait: "
+            f"{seconds}s"
+
         )
 
         await asyncio.sleep(
@@ -765,12 +739,8 @@ async def process_message(event):
 
         logger.error(
 
-            "❌ Telegram RPC error | "
-            "%s: %s",
-
-            type(e).__name__,
-
-            e,
+            f"❌ Telegram RPC error | "
+            f"{type(e).__name__}: {e}"
 
         )
 
@@ -784,9 +754,8 @@ async def process_message(event):
 
         logger.exception(
 
-            "❌ Message processing error: %s",
-
-            e,
+            f"❌ Message processing error | "
+            f"{type(e).__name__}: {e}"
 
         )
 
@@ -799,6 +768,9 @@ async def process_message(event):
     events.NewMessage()
 )
 async def new_message(event):
+
+    # لا نعالج الرسالة داخل callback نفسه
+    # حتى لا نوقف استقبال الرسائل الأخرى.
 
     asyncio.create_task(
         process_message(event)
@@ -822,7 +794,7 @@ async def main():
     )
 
     print(
-        "⚡ DELIVERY KEYWORD FILTER"
+        "📡 GROUP MESSAGE MONITOR"
     )
 
     print(
@@ -834,8 +806,7 @@ async def main():
     )
 
     print(
-        f"🧲 KEYWORDS: "
-        f"{len(DELIVERY_KEYWORDS)}"
+        f"🧲 KEYWORDS: {len(KEYWORDS)}"
     )
 
     print("=" * 70)
@@ -845,9 +816,9 @@ async def main():
 
         try:
 
-            # =================================================
+            # ------------------------------------------------
             # CONNECT
-            # =================================================
+            # ------------------------------------------------
 
             logger.info(
                 "🔌 جاري الاتصال بـ Telegram..."
@@ -856,9 +827,9 @@ async def main():
             await client.connect()
 
 
-            # =================================================
+            # ------------------------------------------------
             # AUTH
-            # =================================================
+            # ------------------------------------------------
 
             authorized = (
                 await client.is_user_authorized()
@@ -868,18 +839,15 @@ async def main():
             if not authorized:
 
                 logger.critical(
-
-                    "❌ ELITE_SESSION غير صالحة "
-                    "أو لم تعد مصرحًا بها."
-
+                    "❌ ELITE_SESSION غير صالحة أو غير مصرح بها."
                 )
 
                 return
 
 
-            # =================================================
+            # ------------------------------------------------
             # ACCOUNT
-            # =================================================
+            # ------------------------------------------------
 
             me = await client.get_me()
 
@@ -897,23 +865,17 @@ async def main():
 
             logger.info(
 
-                "✅ الحساب متصل | "
-                "name=%s | "
-                "id=%s | "
-                "username=%s",
-
-                me.first_name or "",
-
-                me.id,
-
-                username,
+                f"✅ الحساب متصل | "
+                f"name={me.first_name or ''} | "
+                f"id={me.id} | "
+                f"username={username}"
 
             )
 
 
-            # =================================================
+            # ------------------------------------------------
             # CHECK TARGET
-            # =================================================
+            # ------------------------------------------------
 
             try:
 
@@ -923,48 +885,37 @@ async def main():
                     )
                 )
 
-
                 target_title = (
-
                     getattr(
                         target,
                         "title",
                         None,
                     )
-
                     or str(
                         LOG_CHAT_ID
                     )
-
                 )
-
 
                 logger.info(
 
-                    "📢 القناة الهدف: %s",
-
-                    target_title,
+                    f"📢 القناة الهدف: "
+                    f"{target_title}"
 
                 )
-
 
             except Exception as e:
 
-                logger.error(
+                logger.warning(
 
-                    "❌ لا يستطيع الحساب الوصول "
-                    "إلى القناة الهدف: %s",
-
-                    e,
+                    "⚠️ تعذر الوصول إلى "
+                    f"القناة الهدف: {e}"
 
                 )
 
-                return
 
-
-            # =================================================
+            # ------------------------------------------------
             # CATCH UP
-            # =================================================
+            # ------------------------------------------------
 
             try:
 
@@ -982,64 +933,43 @@ async def main():
 
                 logger.warning(
 
-                    "⚠️ catch_up error: %s",
-
-                    e,
+                    f"⚠️ catch_up error: {e}"
 
                 )
 
 
-            # =================================================
-            # READY
-            # =================================================
+            # ------------------------------------------------
+            # LISTEN
+            # ------------------------------------------------
 
             logger.info(
                 "👂 الحساب يراقب المجموعات الآن..."
             )
 
             logger.info(
-
-                "🧲 عدد الكلمات المفتاحية: %s",
-
-                len(
-                    DELIVERY_KEYWORDS
-                ),
-
-            )
-
-            logger.info(
-                "📡 النظام جاهز لاستقبال الطلبات."
+                "📡 ينتظر طلبات التوصيل..."
             )
 
 
-            # =================================================
+            # ------------------------------------------------
             # RUN
-            # =================================================
+            # ------------------------------------------------
 
             await client.run_until_disconnected()
 
-
-        # =====================================================
-        # AUTH KEY DUPLICATED
-        # =====================================================
 
         except AuthKeyDuplicatedError:
 
             logger.critical(
 
                 "🚨 AuthKeyDuplicatedError\n"
-                "نفس ELITE_SESSION مستخدمة "
-                "في مكان آخر.\n"
-                "أوقف النسخة الأخرى."
+                "هذه ELITE_SESSION مستخدمة في مكان آخر.\n"
+                "لا تشغل نفس Session في أكثر من مكان."
 
             )
 
             return
 
-
-        # =====================================================
-        # FLOOD WAIT
-        # =====================================================
 
         except FloodWaitError as e:
 
@@ -1050,9 +980,8 @@ async def main():
 
             logger.warning(
 
-                "⏳ Telegram طلب الانتظار %s ثانية.",
-
-                seconds,
+                f"⏳ Telegram طلب الانتظار "
+                f"{seconds} ثانية."
 
             )
 
@@ -1061,58 +990,38 @@ async def main():
             )
 
 
-        # =====================================================
-        # RPC ERROR
-        # =====================================================
-
         except RPCError as e:
 
             logger.error(
 
-                "❌ RPC ERROR | %s: %s",
-
-                type(e).__name__,
-
-                e,
+                f"❌ Telegram RPC error | "
+                f"{type(e).__name__}: {e}"
 
             )
 
             await asyncio.sleep(
-                10
+                5
             )
 
-
-        # =====================================================
-        # CANCEL
-        # =====================================================
 
         except asyncio.CancelledError:
 
             raise
 
 
-        # =====================================================
-        # OTHER ERROR
-        # =====================================================
-
         except Exception as e:
 
             logger.exception(
 
-                "❌ Connection error: %s",
-
-                e,
+                f"❌ Connection error | "
+                f"{type(e).__name__}: {e}"
 
             )
 
             await asyncio.sleep(
-                10
+                5
             )
 
-
-        # =====================================================
-        # DISCONNECT
-        # =====================================================
 
         finally:
 
