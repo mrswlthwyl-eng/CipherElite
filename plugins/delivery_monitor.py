@@ -1,22 +1,6 @@
 # ============================================================
 # plugins/delivery_monitor.py
-#
-# CipherElite Delivery Monitor
-#
-# - يستخدم Telegram Client الأصلي
-# - لا ينشئ Session جديدة
-# - لا يغير main.py
-# - لا يغير startup.py
-# - يراقب الرسائل الواردة من المجموعات
-# - يلتقط رسائل الأشخاص الآخرين
-# - فلترة طلبات التوصيل والمشاوير
-# - إرسال المطابق إلى LOG_CHAT_ID
-# - الاسم قابل للضغط
-# - Telegram ID قابل للضغط
-# - Username قابل للضغط إذا موجود
-# - رابط الرسالة الأصلية
-# - تجاهل البوتات
-# - معالجة FloodWait
+# CipherElite Delivery Monitor + Debug
 # ============================================================
 
 import asyncio
@@ -25,10 +9,7 @@ import re
 from html import escape
 
 from telethon import events
-from telethon.errors import (
-    FloodWaitError,
-    RPCError,
-)
+from telethon.errors import FloodWaitError, RPCError
 
 from config.config import Config
 
@@ -50,7 +31,7 @@ logger = logging.getLogger(
 
 
 # ============================================================
-# TARGET CHAT
+# TARGET
 # ============================================================
 
 TARGET_CHAT_ID = getattr(
@@ -71,13 +52,12 @@ KEYWORDS = [
     "من _الى",
     "من الى",
 
+    "احتاج",
     "احتاج سيارة",
     "احتاج سواق",
     "احتاج سائق",
-    "احتاج",
 
     "شهري",
-
     "مندوب",
 
     "سواق",
@@ -86,14 +66,9 @@ KEYWORDS = [
     "سائقه",
 
     "تاكسي",
-
     "سيارة",
-
     "باص",
-
     "نقل",
-
-    "موصلات",
 
     "ابي توصيل",
     "أبي توصيل",
@@ -102,6 +77,8 @@ KEYWORDS = [
     "أبغى توصيل",
 
     "احتاج توصيل",
+    "احتاج مواصلات",
+    "موصلات",
 
     "تواصل",
 
@@ -109,7 +86,6 @@ KEYWORDS = [
     "من رايحه",
 
     "تعرفون باص",
-
     "تعرفون سواق",
     "تعرفون سائق",
 
@@ -152,14 +128,12 @@ def normalize_text(text):
     for old, new in replacements.items():
         text = text.replace(old, new)
 
-    # إزالة التشكيل
     text = re.sub(
         r"[\u064B-\u065F\u0670]",
         "",
         text,
     )
 
-    # توحيد المسافات
     text = re.sub(
         r"\s+",
         " ",
@@ -169,22 +143,17 @@ def normalize_text(text):
     return text.strip()
 
 
-# ============================================================
-# NORMALIZED KEYWORDS
-# ============================================================
-
 NORMALIZED_KEYWORDS = [
     (
         original,
         normalize_text(original),
     )
     for original in KEYWORDS
-    if original
 ]
 
 
 # ============================================================
-# MATCH KEYWORDS
+# MATCH
 # ============================================================
 
 def matched_keywords(text):
@@ -198,22 +167,14 @@ def matched_keywords(text):
 
     for original, keyword in NORMALIZED_KEYWORDS:
 
-        if not keyword:
-            continue
+        if keyword and keyword in normalized:
+            matches.append(original)
 
-        if keyword in normalized:
-
-            matches.append(
-                original
-            )
-
-    return list(
-        dict.fromkeys(matches)
-    )
+    return list(dict.fromkeys(matches))
 
 
 # ============================================================
-# SAFE TEXT
+# SAFE HTML
 # ============================================================
 
 def safe_text(value):
@@ -221,13 +182,11 @@ def safe_text(value):
     if value is None:
         return ""
 
-    return escape(
-        str(value)
-    )
+    return escape(str(value))
 
 
 # ============================================================
-# USER INFORMATION
+# USER
 # ============================================================
 
 def build_user_info(sender):
@@ -241,19 +200,11 @@ def build_user_info(sender):
             0,
         )
 
-    # --------------------------------------------------------
-    # USER ID
-    # --------------------------------------------------------
-
     user_id = getattr(
         sender,
         "id",
         0,
     )
-
-    # --------------------------------------------------------
-    # NAME
-    # --------------------------------------------------------
 
     first_name = (
         getattr(
@@ -278,12 +229,7 @@ def build_user_info(sender):
     ).strip()
 
     if not full_name:
-
         full_name = "مستخدم"
-
-    # --------------------------------------------------------
-    # CLICKABLE NAME + ID
-    # --------------------------------------------------------
 
     if user_id:
 
@@ -305,13 +251,7 @@ def build_user_info(sender):
             full_name
         )
 
-        clickable_id = (
-            "غير معروف"
-        )
-
-    # --------------------------------------------------------
-    # USERNAME
-    # --------------------------------------------------------
+        clickable_id = "غير معروف"
 
     username = getattr(
         sender,
@@ -343,7 +283,7 @@ def build_user_info(sender):
 
 
 # ============================================================
-# SOURCE MESSAGE LINK
+# MESSAGE LINK
 # ============================================================
 
 def build_message_link(
@@ -354,10 +294,6 @@ def build_message_link(
 
     if not chat_id:
         return None
-
-    # --------------------------------------------------------
-    # PUBLIC GROUP / CHANNEL
-    # --------------------------------------------------------
 
     chat_username = getattr(
         chat,
@@ -373,21 +309,11 @@ def build_message_link(
             f"{message_id}"
         )
 
-    # --------------------------------------------------------
-    # PRIVATE SUPERGROUP
-    # --------------------------------------------------------
+    raw_chat_id = str(chat_id)
 
-    raw_chat_id = str(
-        chat_id
-    )
+    if raw_chat_id.startswith("-100"):
 
-    if raw_chat_id.startswith(
-        "-100"
-    ):
-
-        internal_id = (
-            raw_chat_id[4:]
-        )
+        internal_id = raw_chat_id[4:]
 
         return (
             f"https://t.me/c/"
@@ -399,7 +325,7 @@ def build_message_link(
 
 
 # ============================================================
-# BUILD DELIVERY MESSAGE
+# BUILD MESSAGE
 # ============================================================
 
 def build_delivery_message(
@@ -410,43 +336,21 @@ def build_delivery_message(
     chat,
 ):
 
-    # --------------------------------------------------------
-    # CHAT TITLE
-    # --------------------------------------------------------
-
-    if chat:
-
-        chat_title = (
-            getattr(
-                chat,
-                "title",
-                None,
-            )
-            or "مجموعة غير معروفة"
+    chat_title = (
+        getattr(
+            chat,
+            "title",
+            None,
         )
-
-    else:
-
-        chat_title = (
-            "مجموعة غير معروفة"
-        )
-
-    # --------------------------------------------------------
-    # USER
-    # --------------------------------------------------------
+        or "مجموعة غير معروفة"
+    )
 
     (
         clickable_name,
         clickable_id,
         username_line,
         user_id,
-    ) = build_user_info(
-        sender
-    )
-
-    # --------------------------------------------------------
-    # MESSAGE LINK
-    # --------------------------------------------------------
+    ) = build_user_info(sender)
 
     message_link = build_message_link(
         chat,
@@ -468,21 +372,10 @@ def build_delivery_message(
             "🔗 رابط الرسالة الأصلية غير متاح"
         )
 
-    # --------------------------------------------------------
-    # KEYWORDS
-    # --------------------------------------------------------
-
-    keyword_text = ", ".join(
-        matches
-    )
+    keyword_text = ", ".join(matches)
 
     if not keyword_text:
-
         keyword_text = "مطابقة"
-
-    # --------------------------------------------------------
-    # FINAL MESSAGE
-    # --------------------------------------------------------
 
     message = (
 
@@ -491,7 +384,6 @@ def build_delivery_message(
         "━━━╮\n\n"
 
         "📝 <b>نص الرسالة:</b>\n"
-
         f"{safe_text(text)}\n\n"
 
         "━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -515,20 +407,16 @@ def build_delivery_message(
         "━━━━━━━━━━━━━━━━━━━━\n\n"
 
         "🧲 <b>الكلمات المطابقة:</b>\n"
-
         f"{safe_text(keyword_text)}\n\n"
 
         "╰━━━━━━━━━━━━━━━━━━━━╯"
     )
 
-    return (
-        message,
-        user_id,
-    )
+    return message, user_id
 
 
 # ============================================================
-# PROCESS MESSAGE
+# PROCESS
 # ============================================================
 
 async def process_delivery_message(
@@ -538,44 +426,26 @@ async def process_delivery_message(
 
     try:
 
-        # ====================================================
-        # INCOMING ONLY
-        # ====================================================
-
-        # نتأكد أن الرسالة من شخص آخر
-        # وليس رسالة أرسلها الحساب نفسه.
-
-        if getattr(
-            event,
-            "out",
-            False,
-        ):
-
-            return
-
-        # ====================================================
-        # GROUPS ONLY
-        # ====================================================
+        # ----------------------------------------------------
+        # المجموعة فقط
+        # ----------------------------------------------------
 
         if not event.is_group:
-
             return
 
-        # ====================================================
-        # DON'T PROCESS TARGET CHAT
-        # ====================================================
+        # ----------------------------------------------------
+        # لا تعالج قناة الإرسال
+        # ----------------------------------------------------
 
         if (
             TARGET_CHAT_ID
-            and event.chat_id
-            == TARGET_CHAT_ID
+            and event.chat_id == TARGET_CHAT_ID
         ):
-
             return
 
-        # ====================================================
-        # TEXT
-        # ====================================================
+        # ----------------------------------------------------
+        # النص
+        # ----------------------------------------------------
 
         text = (
             event.raw_text
@@ -583,24 +453,28 @@ async def process_delivery_message(
         ).strip()
 
         if not text:
-
             return
 
-        # ====================================================
-        # FILTER
-        # ====================================================
+        # ----------------------------------------------------
+        # الكلمات
+        # ----------------------------------------------------
 
-        matches = matched_keywords(
-            text
-        )
+        matches = matched_keywords(text)
 
         if not matches:
 
+            logger.info(
+                "📩 Group message received "
+                "but no keyword matched | "
+                f"chat={event.chat_id} | "
+                f"sender={event.sender_id}"
+            )
+
             return
 
-        # ====================================================
-        # SENDER
-        # ====================================================
+        # ----------------------------------------------------
+        # Sender
+        # ----------------------------------------------------
 
         sender = getattr(
             event,
@@ -611,18 +485,14 @@ async def process_delivery_message(
         if sender is None:
 
             try:
-
-                sender = (
-                    await event.get_sender()
-                )
+                sender = await event.get_sender()
 
             except Exception:
-
                 sender = None
 
-        # ====================================================
-        # IGNORE BOTS
-        # ====================================================
+        # ----------------------------------------------------
+        # تجاهل البوتات
+        # ----------------------------------------------------
 
         if sender:
 
@@ -632,11 +502,16 @@ async def process_delivery_message(
                 False,
             ):
 
+                logger.info(
+                    "🤖 Bot ignored | "
+                    f"sender={event.sender_id}"
+                )
+
                 return
 
-        # ====================================================
-        # CHAT
-        # ====================================================
+        # ----------------------------------------------------
+        # Chat
+        # ----------------------------------------------------
 
         chat = getattr(
             event,
@@ -647,64 +522,43 @@ async def process_delivery_message(
         if chat is None:
 
             try:
-
-                chat = (
-                    await event.get_chat()
-                )
+                chat = await event.get_chat()
 
             except Exception:
-
                 chat = None
 
-        # ====================================================
-        # BUILD
-        # ====================================================
+        # ----------------------------------------------------
+        # Build
+        # ----------------------------------------------------
 
         (
             final_message,
             user_id,
         ) = build_delivery_message(
-
             event,
-
             text,
-
             matches,
-
             sender,
-
             chat,
-
         )
 
-        # ====================================================
-        # SEND
-        # ====================================================
+        # ----------------------------------------------------
+        # Send
+        # ----------------------------------------------------
 
         await client.send_message(
-
             TARGET_CHAT_ID,
-
             final_message,
-
             parse_mode="html",
-
             link_preview=False,
-
         )
 
-        # ====================================================
-        # LOG
-        # ====================================================
-
         logger.info(
-
-            "✅ Delivery message sent | "
+            "✅ DELIVERY SENT | "
             f"chat={event.chat_id} | "
             f"message={event.id} | "
-            f"user={user_id} | "
+            f"sender={user_id} | "
             f"keywords={matches}"
-
         )
 
     except FloodWaitError as e:
@@ -718,17 +572,13 @@ async def process_delivery_message(
             f"⏳ FloodWait: {seconds}s"
         )
 
-        await asyncio.sleep(
-            seconds
-        )
+        await asyncio.sleep(seconds)
 
     except RPCError as e:
 
         logger.error(
-
-            "❌ Telegram RPC error: "
+            "❌ Telegram RPC error | "
             f"{type(e).__name__}: {e}"
-
         )
 
     except asyncio.CancelledError:
@@ -738,38 +588,28 @@ async def process_delivery_message(
     except Exception as e:
 
         logger.exception(
-
-            "❌ Delivery monitor error: "
+            "❌ Delivery monitor error | "
             f"{type(e).__name__}: {e}"
-
         )
 
 
 # ============================================================
-# PLUGIN INIT
+# INIT
 # ============================================================
 
 def init(client):
 
-    # --------------------------------------------------------
-    # CHECK TARGET
-    # --------------------------------------------------------
-
     if not TARGET_CHAT_ID:
 
-        logger.warning(
-            "⚠️ LOG_CHAT_ID غير مضبوط."
+        logger.error(
+            "❌ LOG_CHAT_ID غير مضبوط."
         )
 
         return
 
-    # --------------------------------------------------------
-    # IMPORTANT
-    #
-    # incoming=True
-    #
-    # يجعل الـhandler مخصصًا للرسائل الواردة.
-    # --------------------------------------------------------
+    # ========================================================
+    # استقبال جميع الرسائل الواردة
+    # ========================================================
 
     @client.on(
         events.NewMessage(
@@ -778,35 +618,41 @@ def init(client):
     )
     async def delivery_handler(event):
 
+        # ----------------------------------------------------
+        # DEBUG:
+        # هذا السطر يثبت أن الحساب استقبل الرسالة
+        # ----------------------------------------------------
+
+        print(
+            "📥 NEW MESSAGE | "
+            f"chat={event.chat_id} | "
+            f"sender={event.sender_id} | "
+            f"out={event.out} | "
+            f"group={event.is_group} | "
+            f"text={event.raw_text[:100]!r}"
+        )
+
         await process_delivery_message(
             client,
             event,
         )
 
-    # --------------------------------------------------------
-    # LOG
-    # --------------------------------------------------------
+    # ========================================================
+    # Startup
+    # ========================================================
 
-    logger.info(
-        "🚗 Delivery Monitor loaded successfully"
+    logger.warning(
+        "🚗 Delivery Monitor loaded"
     )
 
-    logger.info(
+    logger.warning(
         "👂 Monitoring incoming group messages"
     )
 
-    logger.info(
+    logger.warning(
         f"📢 Target: {TARGET_CHAT_ID}"
     )
 
-    logger.info(
+    logger.warning(
         f"🧲 Keywords: {len(KEYWORDS)}"
-    )
-
-    logger.info(
-        "👤 Incoming messages: ENABLED"
-    )
-
-    logger.info(
-        "🤖 Bot messages: IGNORED"
     )
