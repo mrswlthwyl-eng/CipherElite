@@ -1,5 +1,5 @@
 # ============================================================
-# CipherElite Delivery Monitor
+# plugins/delivery_monitor.py
 # ============================================================
 
 import asyncio
@@ -7,8 +7,10 @@ import logging
 import re
 from html import escape
 
-from telethon import events, Button
-from telethon.errors import FloodWaitError, RPCError
+from telethon import events
+from telethon.tl.types import (
+    InputKeyboardButtonUserProfile,
+)
 
 from config.config import Config
 
@@ -17,7 +19,7 @@ from config.config import Config
 # VERSION
 # ============================================================
 
-VERSION = "2.2.0"
+VERSION = "3.0.0"
 
 
 # ============================================================
@@ -30,7 +32,7 @@ logger = logging.getLogger(
 
 
 # ============================================================
-# TARGET
+# TARGET CHAT
 # ============================================================
 
 TARGET_CHAT_ID = int(
@@ -46,71 +48,51 @@ KEYWORDS = [
     "توصيل",
     "مشوار",
     "مشاوير",
-
     "احتاج",
     "احتاج سيارة",
     "احتاج سواق",
     "احتاج سائق",
     "احتاج توصيل",
     "احتاج مواصلات",
-
     "ابي توصيل",
     "أبي توصيل",
-
     "ابغى توصيل",
     "أبغى توصيل",
-
     "ابي سواق",
     "أبي سواق",
-
     "ابغى سواق",
     "أبغى سواق",
-
     "ابي سائق",
     "أبي سائق",
-
     "ابغى سائق",
     "أبغى سائق",
-
     "ابي باص",
     "أبي باص",
-
     "ابغى باص",
     "أبغى باص",
-
     "سواق",
     "سواقه",
     "سائق",
     "سائقه",
-
     "سيارة",
     "سياره",
-
     "باص",
     "تاكسي",
-
     "نقل",
     "مندوب",
     "موصلات",
-
     "شهري",
-
     "يوصلني",
     "يوصلي",
     "يوديني",
-
     "تعرفون سواق",
     "تعرفون سائق",
     "تعرفون باص",
-
-    "من رايحة",
-    "من رايحه",
-
 ]
 
 
 # ============================================================
-# NORMALIZE ARABIC
+# NORMALIZE
 # ============================================================
 
 def normalize_text(text):
@@ -132,38 +114,32 @@ def normalize_text(text):
     for old, new in replacements.items():
         text = text.replace(old, new)
 
-    # إزالة التشكيل
     text = re.sub(
         r"[\u064B-\u065F\u0670]",
         "",
-        text
+        text,
     )
 
-    # توحيد المسافات
     text = re.sub(
         r"\s+",
         " ",
-        text
+        text,
     )
 
     return text.strip()
 
 
-# ============================================================
-# NORMALIZED KEYWORDS
-# ============================================================
-
 NORMALIZED_KEYWORDS = [
     (
         original,
-        normalize_text(original)
+        normalize_text(original),
     )
     for original in KEYWORDS
 ]
 
 
 # ============================================================
-# MATCH
+# MATCH KEYWORDS
 # ============================================================
 
 def get_matches(text):
@@ -181,11 +157,13 @@ def get_matches(text):
 
             result.append(original)
 
-    return list(dict.fromkeys(result))
+    return list(
+        dict.fromkeys(result)
+    )
 
 
 # ============================================================
-# SAFE HTML
+# HTML ESCAPE
 # ============================================================
 
 def safe(value):
@@ -197,12 +175,13 @@ def safe(value):
 
 
 # ============================================================
-# USER DATA
+# USER INFORMATION
 # ============================================================
 
-def get_user_data(sender):
+def get_user_info(sender):
 
     if sender is None:
+
         return (
             "مستخدم",
             0,
@@ -210,16 +189,28 @@ def get_user_data(sender):
         )
 
     user_id = int(
-        getattr(sender, "id", 0) or 0
+        getattr(
+            sender,
+            "id",
+            0,
+        ) or 0
     )
 
     first_name = (
-        getattr(sender, "first_name", None)
+        getattr(
+            sender,
+            "first_name",
+            None,
+        )
         or ""
     )
 
     last_name = (
-        getattr(sender, "last_name", None)
+        getattr(
+            sender,
+            "last_name",
+            None,
+        )
         or ""
     )
 
@@ -228,12 +219,13 @@ def get_user_data(sender):
     ).strip()
 
     if not full_name:
+
         full_name = "مستخدم"
 
     username = getattr(
         sender,
         "username",
-        None
+        None,
     )
 
     return (
@@ -244,22 +236,23 @@ def get_user_data(sender):
 
 
 # ============================================================
-# MESSAGE LINK
+# SOURCE MESSAGE LINK
 # ============================================================
 
 def get_message_link(
     chat,
     chat_id,
-    message_id
+    message_id,
 ):
 
     if not chat_id:
+
         return None
 
     username = getattr(
         chat,
         "username",
-        None
+        None,
     )
 
     # Public group
@@ -272,11 +265,11 @@ def get_message_link(
         )
 
     # Private supergroup
-    chat_id_string = str(chat_id)
+    raw_id = str(chat_id)
 
-    if chat_id_string.startswith("-100"):
+    if raw_id.startswith("-100"):
 
-        internal_id = chat_id_string[4:]
+        internal_id = raw_id[4:]
 
         return (
             f"https://t.me/c/"
@@ -296,53 +289,26 @@ def build_message(
     text,
     matches,
     sender,
-    chat
+    chat,
 ):
-
-    # --------------------------------------------------------
-    # USER
-    # --------------------------------------------------------
 
     (
         full_name,
         user_id,
-        username
-    ) = get_user_data(sender)
-
-    # --------------------------------------------------------
-    # GROUP
-    # --------------------------------------------------------
+        username,
+    ) = get_user_info(sender)
 
     chat_title = (
         getattr(
             chat,
             "title",
-            None
+            None,
         )
         or "مجموعة غير معروفة"
     )
 
     # --------------------------------------------------------
-    # USERNAME
-    # --------------------------------------------------------
-
-    if username:
-
-        username_line = (
-            f'🔗 <a href="https://t.me/'
-            f'{safe(username)}">'
-            f'@{safe(username)}'
-            f'</a>'
-        )
-
-    else:
-
-        username_line = (
-            "🔗 بدون username"
-        )
-
-    # --------------------------------------------------------
-    # CLICKABLE USER NAME
+    # Name
     # --------------------------------------------------------
 
     if user_id:
@@ -368,13 +334,32 @@ def build_message(
         clickable_id = "غير معروف"
 
     # --------------------------------------------------------
-    # ORIGINAL MESSAGE
+    # Username
+    # --------------------------------------------------------
+
+    if username:
+
+        username_line = (
+            f'🔗 <a href="https://t.me/'
+            f'{safe(username)}">'
+            f'@{safe(username)}'
+            f'</a>'
+        )
+
+    else:
+
+        username_line = (
+            "🔗 بدون username"
+        )
+
+    # --------------------------------------------------------
+    # Original message
     # --------------------------------------------------------
 
     message_link = get_message_link(
         chat,
         event.chat_id,
-        event.id
+        event.id,
     )
 
     if message_link:
@@ -392,7 +377,7 @@ def build_message(
         )
 
     # --------------------------------------------------------
-    # KEYWORDS
+    # Keywords
     # --------------------------------------------------------
 
     keyword_text = ", ".join(
@@ -400,7 +385,7 @@ def build_message(
     )
 
     # --------------------------------------------------------
-    # MESSAGE
+    # Final
     # --------------------------------------------------------
 
     message = (
@@ -441,42 +426,160 @@ def build_message(
 
 
 # ============================================================
+# SEND RESULT
+# ============================================================
+
+async def send_result(
+    client,
+    message,
+    user_id,
+):
+
+    # ========================================================
+    # IMPORTANT
+    #
+    # Telegram User Profile Button
+    #
+    # ليس Button.url
+    # وليس tg:// URL كنص.
+    #
+    # ========================================================
+
+    if user_id:
+
+        try:
+
+            # الحصول على InputUser الكامل
+            input_user = await client.get_input_entity(
+                user_id
+            )
+
+            profile_button = (
+                InputKeyboardButtonUserProfile(
+                    text="👤 فتح الخاص",
+                    user_id=input_user,
+                )
+            )
+
+            buttons = [
+                [
+                    profile_button
+                ]
+            ]
+
+            await client.send_message(
+                TARGET_CHAT_ID,
+                message,
+                parse_mode="html",
+                link_preview=False,
+                buttons=buttons,
+            )
+
+            return True
+
+        except Exception as e:
+
+            logger.exception(
+                "UserProfile button failed: "
+                f"{e}"
+            )
+
+            # ------------------------------------------------
+            # Fallback
+            # ------------------------------------------------
+            #
+            # إذا Telegram/الإصدار لا يسمح بالزر الجديد،
+            # نرسل رابط tg:// داخل زر URL.
+            #
+            # ------------------------------------------------
+
+            try:
+
+                from telethon import Button
+
+                fallback = [
+                    [
+                        Button.url(
+                            "👤 فتح الخاص",
+                            f"tg://user?id={user_id}",
+                        )
+                    ]
+                ]
+
+                await client.send_message(
+                    TARGET_CHAT_ID,
+                    message,
+                    parse_mode="html",
+                    link_preview=False,
+                    buttons=fallback,
+                )
+
+                return True
+
+            except Exception as fallback_error:
+
+                logger.exception(
+                    "Fallback button failed: "
+                    f"{fallback_error}"
+                )
+
+                return False
+
+    # --------------------------------------------------------
+    # No user ID
+    # --------------------------------------------------------
+
+    await client.send_message(
+        TARGET_CHAT_ID,
+        message,
+        parse_mode="html",
+        link_preview=False,
+    )
+
+    return True
+
+
+# ============================================================
 # PROCESS MESSAGE
 # ============================================================
 
 async def process_message(
     client,
-    event
+    event,
 ):
 
     try:
 
         # ----------------------------------------------------
-        # رسائل الآخرين فقط
+        # Incoming only
         # ----------------------------------------------------
 
         if event.out:
+
             return
 
         # ----------------------------------------------------
-        # مجموعات فقط
+        # Groups only
         # ----------------------------------------------------
 
         if not event.is_group:
+
             return
 
         # ----------------------------------------------------
-        # لا نلتقط رسائل قناة/مجموعة النتائج
+        # Ignore target group
         # ----------------------------------------------------
 
         if (
             TARGET_CHAT_ID
-            and event.chat_id == TARGET_CHAT_ID
+            and event.chat_id
+            == TARGET_CHAT_ID
         ):
+
             return
 
         # ----------------------------------------------------
-        # TEXT
+        # Text
         # ----------------------------------------------------
 
         text = (
@@ -485,47 +588,49 @@ async def process_message(
         ).strip()
 
         if not text:
+
             return
 
         # ----------------------------------------------------
-        # KEYWORDS
+        # Keywords
         # ----------------------------------------------------
 
-        matches = get_matches(text)
+        matches = get_matches(
+            text
+        )
 
         if not matches:
+
             return
 
         # ----------------------------------------------------
-        # SENDER
+        # Sender
         # ----------------------------------------------------
-
-        sender = None
 
         try:
 
             sender = await event.get_sender()
 
-        except Exception as e:
+        except Exception:
 
-            logger.debug(
-                f"Could not get sender: {e}"
-            )
+            sender = None
 
         # ----------------------------------------------------
-        # IGNORE BOTS
+        # Ignore bots
         # ----------------------------------------------------
 
-        if sender and getattr(
-            sender,
-            "bot",
-            False
-        ):
+        if sender:
 
-            return
+            if getattr(
+                sender,
+                "bot",
+                False,
+            ):
+
+                return
 
         # ----------------------------------------------------
-        # CHAT
+        # Chat
         # ----------------------------------------------------
 
         try:
@@ -537,70 +642,48 @@ async def process_message(
             chat = None
 
         # ----------------------------------------------------
-        # BUILD
+        # Build
         # ----------------------------------------------------
 
         (
             final_message,
-            user_id
+            user_id,
         ) = build_message(
             event,
             text,
             matches,
             sender,
-            chat
+            chat,
         )
 
-        # ====================================================
-        # IMPORTANT
-        #
-        # زر فتح الخاص
-        #
-        # هذا ليس نصًا عاديًا.
-        # هذا Inline URL Button.
-        # ====================================================
-
-        buttons = None
-
-        if user_id:
-
-            buttons = [
-                [
-                    Button.url(
-                        "👤 فتح الخاص",
-                        f"tg://user?id={user_id}"
-                    )
-                ]
-            ]
-
         # ----------------------------------------------------
-        # SEND
+        # Send
         # ----------------------------------------------------
 
-        await client.send_message(
-            TARGET_CHAT_ID,
+        success = await send_result(
+            client,
             final_message,
-            parse_mode="html",
-            link_preview=False,
-            buttons=buttons
+            user_id,
         )
 
-        logger.info(
-            "✅ Delivery captured | "
-            f"chat={event.chat_id} | "
-            f"user={user_id} | "
-            f"keywords={matches}"
-        )
+        if success:
+
+            logger.info(
+                "✅ DELIVERY SENT | "
+                f"chat={event.chat_id} | "
+                f"user={user_id} | "
+                f"keywords={matches}"
+            )
 
     except FloodWaitError as e:
 
         seconds = max(
             int(e.seconds),
-            1
+            1,
         )
 
         logger.warning(
-            f"Telegram FloodWait: {seconds}s"
+            f"⏳ FloodWait {seconds}s"
         )
 
         await asyncio.sleep(
@@ -621,61 +704,25 @@ async def process_message(
     except Exception as e:
 
         logger.exception(
-            f"Delivery monitor error: {e}"
+            f"Delivery error: {e}"
         )
 
 
 # ============================================================
-# EVENT HANDLER
+# EVENT
 # ============================================================
 
-async def handle_new_message(
+async def handler(
     client,
-    event
+    event,
 ):
-
-    # إنشاء مهمة منفصلة حتى لا نوقف استقبال
-    # الرسائل الجديدة أثناء إرسال رسالة سابقة.
 
     asyncio.create_task(
         process_message(
             client,
-            event
+            event,
         )
     )
-
-
-# ============================================================
-# GROUP SCANNER
-# ============================================================
-
-async def scan_groups(client):
-
-    count = 0
-
-    try:
-
-        async for dialog in client.iter_dialogs():
-
-            try:
-
-                if not dialog.is_group:
-                    continue
-
-                count += 1
-
-            except Exception:
-                continue
-
-        logger.info(
-            f"📊 Groups available to account: {count}"
-        )
-
-    except Exception as e:
-
-        logger.error(
-            f"Group scan error: {e}"
-        )
 
 
 # ============================================================
@@ -683,10 +730,6 @@ async def scan_groups(client):
 # ============================================================
 
 def init(client):
-
-    # --------------------------------------------------------
-    # LOG CHAT
-    # --------------------------------------------------------
 
     if not TARGET_CHAT_ID:
 
@@ -697,45 +740,49 @@ def init(client):
         return
 
     # --------------------------------------------------------
-    # REGISTER EVENT
-    #
-    # لا نضع chats=...
-    #
-    # لأننا نريد الرسائل الواردة من جميع المجموعات
-    # التي يستطيع هذا الحساب استقبال تحديثاتها.
+    # جميع الرسائل الواردة
     # --------------------------------------------------------
 
     client.add_event_handler(
         lambda event:
             asyncio.create_task(
-                handle_new_message(
+                handler(
                     client,
-                    event
+                    event,
                 )
             ),
         events.NewMessage(
             incoming=True
-        )
+        ),
     )
 
     # --------------------------------------------------------
-    # STARTUP SCAN
+    # Startup
     # --------------------------------------------------------
 
     async def startup():
 
         try:
 
+            dialogs = 0
+
+            async for dialog in client.iter_dialogs():
+
+                if dialog.is_group:
+
+                    dialogs += 1
+
             logger.warning(
-                "🔎 Scanning Telegram groups..."
+                "🔎 Telegram groups detected: "
+                f"{dialogs}"
             )
 
-            await scan_groups(
-                client
+            logger.warning(
+                "👂 Monitoring all incoming groups"
             )
 
             logger.warning(
-                "✅ Group scan completed"
+                "👤 User Profile Button: ENABLED"
             )
 
         except Exception as e:
@@ -748,26 +795,14 @@ def init(client):
         startup()
     )
 
-    # --------------------------------------------------------
-    # LOG
-    # --------------------------------------------------------
-
     logger.warning(
         "🚗 Delivery Monitor loaded"
     )
 
     logger.warning(
-        "👂 Monitoring incoming messages from groups"
+        f"📢 Target: {TARGET_CHAT_ID}"
     )
 
     logger.warning(
-        f"🧲 Keywords loaded: {len(KEYWORDS)}"
-    )
-
-    logger.warning(
-        f"📢 Destination: {TARGET_CHAT_ID}"
-    )
-
-    logger.warning(
-        "👤 Private contact button: ENABLED"
+        f"🧲 Keywords: {len(KEYWORDS)}"
     )
