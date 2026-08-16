@@ -3,16 +3,15 @@
 #
 # CipherElite Delivery Monitor
 #
-# يعمل داخل CipherElite باستخدام Telegram Client الأصلي
-# لا ينشئ Session جديدة
-# لا يغير main.py
-# لا يغير startup.py
-#
-# الوظائف:
-# - مراقبة الرسائل الجديدة في المجموعات
+# - يستخدم Telegram Client الأصلي
+# - لا ينشئ Session جديدة
+# - لا يغير main.py
+# - لا يغير startup.py
+# - يراقب الرسائل الواردة من المجموعات
+# - يلتقط رسائل الأشخاص الآخرين
 # - فلترة طلبات التوصيل والمشاوير
-# - إرسال الطلبات إلى LOG_CHAT_ID
-# - اسم المستخدم قابل للضغط
+# - إرسال المطابق إلى LOG_CHAT_ID
+# - الاسم قابل للضغط
 # - Telegram ID قابل للضغط
 # - Username قابل للضغط إذا موجود
 # - رابط الرسالة الأصلية
@@ -23,7 +22,6 @@
 import asyncio
 import logging
 import re
-from contextlib import suppress
 from html import escape
 
 from telethon import events
@@ -39,7 +37,7 @@ from config.config import Config
 # VERSION
 # ============================================================
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 
 # ============================================================
@@ -76,6 +74,7 @@ KEYWORDS = [
     "احتاج سيارة",
     "احتاج سواق",
     "احتاج سائق",
+    "احتاج",
 
     "شهري",
 
@@ -94,15 +93,20 @@ KEYWORDS = [
 
     "نقل",
 
+    "موصلات",
+
     "ابي توصيل",
     "أبي توصيل",
 
     "ابغى توصيل",
     "أبغى توصيل",
 
+    "احتاج توصيل",
+
     "تواصل",
 
     "من رايحة",
+    "من رايحه",
 
     "تعرفون باص",
 
@@ -111,6 +115,9 @@ KEYWORDS = [
 
     "ابغى باص",
     "أبغى باص",
+
+    "ابي باص",
+    "أبي باص",
 
     "توصيل طلب",
 
@@ -127,10 +134,6 @@ KEYWORDS = [
 # ============================================================
 
 def normalize_text(text):
-    """
-    توحيد الحروف العربية والمسافات
-    لتقليل اختلافات الكتابة.
-    """
 
     if not text:
         return ""
@@ -147,10 +150,7 @@ def normalize_text(text):
     }
 
     for old, new in replacements.items():
-        text = text.replace(
-            old,
-            new,
-        )
+        text = text.replace(old, new)
 
     # إزالة التشكيل
     text = re.sub(
@@ -169,12 +169,17 @@ def normalize_text(text):
     return text.strip()
 
 
+# ============================================================
+# NORMALIZED KEYWORDS
+# ============================================================
+
 NORMALIZED_KEYWORDS = [
     (
         original,
         normalize_text(original),
     )
     for original in KEYWORDS
+    if original
 ]
 
 
@@ -184,9 +189,7 @@ NORMALIZED_KEYWORDS = [
 
 def matched_keywords(text):
 
-    normalized = normalize_text(
-        text
-    )
+    normalized = normalize_text(text)
 
     if not normalized:
         return []
@@ -205,14 +208,12 @@ def matched_keywords(text):
             )
 
     return list(
-        dict.fromkeys(
-            matches
-        )
+        dict.fromkeys(matches)
     )
 
 
 # ============================================================
-# HTML ESCAPE
+# SAFE TEXT
 # ============================================================
 
 def safe_text(value):
@@ -240,9 +241,8 @@ def build_user_info(sender):
             0,
         )
 
-
     # --------------------------------------------------------
-    # ID
+    # USER ID
     # --------------------------------------------------------
 
     user_id = getattr(
@@ -250,7 +250,6 @@ def build_user_info(sender):
         "id",
         0,
     )
-
 
     # --------------------------------------------------------
     # NAME
@@ -278,14 +277,12 @@ def build_user_info(sender):
         f"{first_name} {last_name}"
     ).strip()
 
-
     if not full_name:
 
         full_name = "مستخدم"
 
-
     # --------------------------------------------------------
-    # CLICKABLE NAME
+    # CLICKABLE NAME + ID
     # --------------------------------------------------------
 
     if user_id:
@@ -304,14 +301,13 @@ def build_user_info(sender):
 
     else:
 
-        clickable_name = (
-            safe_text(full_name)
+        clickable_name = safe_text(
+            full_name
         )
 
         clickable_id = (
             "غير معروف"
         )
-
 
     # --------------------------------------------------------
     # USERNAME
@@ -322,7 +318,6 @@ def build_user_info(sender):
         "username",
         None,
     )
-
 
     if username:
 
@@ -339,7 +334,6 @@ def build_user_info(sender):
             "🔗 بدون username"
         )
 
-
     return (
         clickable_name,
         clickable_id,
@@ -349,7 +343,7 @@ def build_user_info(sender):
 
 
 # ============================================================
-# MESSAGE LINK
+# SOURCE MESSAGE LINK
 # ============================================================
 
 def build_message_link(
@@ -361,9 +355,8 @@ def build_message_link(
     if not chat_id:
         return None
 
-
     # --------------------------------------------------------
-    # PUBLIC USERNAME
+    # PUBLIC GROUP / CHANNEL
     # --------------------------------------------------------
 
     chat_username = getattr(
@@ -371,7 +364,6 @@ def build_message_link(
         "username",
         None,
     )
-
 
     if chat_username:
 
@@ -381,7 +373,6 @@ def build_message_link(
             f"{message_id}"
         )
 
-
     # --------------------------------------------------------
     # PRIVATE SUPERGROUP
     # --------------------------------------------------------
@@ -389,7 +380,6 @@ def build_message_link(
     raw_chat_id = str(
         chat_id
     )
-
 
     if raw_chat_id.startswith(
         "-100"
@@ -405,12 +395,11 @@ def build_message_link(
             f"{message_id}"
         )
 
-
     return None
 
 
 # ============================================================
-# BUILD MESSAGE
+# BUILD DELIVERY MESSAGE
 # ============================================================
 
 def build_delivery_message(
@@ -442,7 +431,6 @@ def build_delivery_message(
             "مجموعة غير معروفة"
         )
 
-
     # --------------------------------------------------------
     # USER
     # --------------------------------------------------------
@@ -456,21 +444,15 @@ def build_delivery_message(
         sender
     )
 
-
     # --------------------------------------------------------
-    # SOURCE MESSAGE LINK
+    # MESSAGE LINK
     # --------------------------------------------------------
 
     message_link = build_message_link(
-
         chat,
-
         event.chat_id,
-
         event.id,
-
     )
-
 
     if message_link:
 
@@ -486,7 +468,6 @@ def build_delivery_message(
             "🔗 رابط الرسالة الأصلية غير متاح"
         )
 
-
     # --------------------------------------------------------
     # KEYWORDS
     # --------------------------------------------------------
@@ -495,11 +476,9 @@ def build_delivery_message(
         matches
     )
 
-
     if not keyword_text:
 
         keyword_text = "مطابقة"
-
 
     # --------------------------------------------------------
     # FINAL MESSAGE
@@ -540,10 +519,12 @@ def build_delivery_message(
         f"{safe_text(keyword_text)}\n\n"
 
         "╰━━━━━━━━━━━━━━━━━━━━╯"
-
     )
 
-    return message, user_id
+    return (
+        message,
+        user_id,
+    )
 
 
 # ============================================================
@@ -558,6 +539,21 @@ async def process_delivery_message(
     try:
 
         # ====================================================
+        # INCOMING ONLY
+        # ====================================================
+
+        # نتأكد أن الرسالة من شخص آخر
+        # وليس رسالة أرسلها الحساب نفسه.
+
+        if getattr(
+            event,
+            "out",
+            False,
+        ):
+
+            return
+
+        # ====================================================
         # GROUPS ONLY
         # ====================================================
 
@@ -565,6 +561,17 @@ async def process_delivery_message(
 
             return
 
+        # ====================================================
+        # DON'T PROCESS TARGET CHAT
+        # ====================================================
+
+        if (
+            TARGET_CHAT_ID
+            and event.chat_id
+            == TARGET_CHAT_ID
+        ):
+
+            return
 
         # ====================================================
         # TEXT
@@ -575,11 +582,9 @@ async def process_delivery_message(
             or ""
         ).strip()
 
-
         if not text:
 
             return
-
 
         # ====================================================
         # FILTER
@@ -589,11 +594,9 @@ async def process_delivery_message(
             text
         )
 
-
         if not matches:
 
             return
-
 
         # ====================================================
         # SENDER
@@ -604,7 +607,6 @@ async def process_delivery_message(
             "sender",
             None,
         )
-
 
         if sender is None:
 
@@ -617,7 +619,6 @@ async def process_delivery_message(
             except Exception:
 
                 sender = None
-
 
         # ====================================================
         # IGNORE BOTS
@@ -633,7 +634,6 @@ async def process_delivery_message(
 
                 return
 
-
         # ====================================================
         # CHAT
         # ====================================================
@@ -643,7 +643,6 @@ async def process_delivery_message(
             "chat",
             None,
         )
-
 
         if chat is None:
 
@@ -657,21 +656,26 @@ async def process_delivery_message(
 
                 chat = None
 
-
         # ====================================================
         # BUILD
         # ====================================================
 
-        final_message, user_id = (
-            build_delivery_message(
-                event,
-                text,
-                matches,
-                sender,
-                chat,
-            )
-        )
+        (
+            final_message,
+            user_id,
+        ) = build_delivery_message(
 
+            event,
+
+            text,
+
+            matches,
+
+            sender,
+
+            chat,
+
+        )
 
         # ====================================================
         # SEND
@@ -689,17 +693,19 @@ async def process_delivery_message(
 
         )
 
+        # ====================================================
+        # LOG
+        # ====================================================
 
         logger.info(
 
-            "Delivery message sent | "
+            "✅ Delivery message sent | "
             f"chat={event.chat_id} | "
             f"message={event.id} | "
             f"user={user_id} | "
             f"keywords={matches}"
 
         )
-
 
     except FloodWaitError as e:
 
@@ -709,33 +715,33 @@ async def process_delivery_message(
         )
 
         logger.warning(
-            f"FloodWait: {seconds}s"
+            f"⏳ FloodWait: {seconds}s"
         )
 
         await asyncio.sleep(
             seconds
         )
 
-
     except RPCError as e:
 
         logger.error(
 
-            f"Telegram RPC error: "
+            "❌ Telegram RPC error: "
             f"{type(e).__name__}: {e}"
 
         )
-
 
     except asyncio.CancelledError:
 
         raise
 
-
     except Exception as e:
 
         logger.exception(
-            f"Delivery monitor error: {e}"
+
+            "❌ Delivery monitor error: "
+            f"{type(e).__name__}: {e}"
+
         )
 
 
@@ -757,13 +763,18 @@ def init(client):
 
         return
 
-
     # --------------------------------------------------------
-    # EVENT HANDLER
+    # IMPORTANT
+    #
+    # incoming=True
+    #
+    # يجعل الـhandler مخصصًا للرسائل الواردة.
     # --------------------------------------------------------
 
     @client.on(
-        events.NewMessage()
+        events.NewMessage(
+            incoming=True
+        )
     )
     async def delivery_handler(event):
 
@@ -772,9 +783,16 @@ def init(client):
             event,
         )
 
+    # --------------------------------------------------------
+    # LOG
+    # --------------------------------------------------------
 
     logger.info(
         "🚗 Delivery Monitor loaded successfully"
+    )
+
+    logger.info(
+        "👂 Monitoring incoming group messages"
     )
 
     logger.info(
@@ -783,4 +801,12 @@ def init(client):
 
     logger.info(
         f"🧲 Keywords: {len(KEYWORDS)}"
+    )
+
+    logger.info(
+        "👤 Incoming messages: ENABLED"
+    )
+
+    logger.info(
+        "🤖 Bot messages: IGNORED"
     )
