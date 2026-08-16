@@ -3,26 +3,28 @@
 #
 # CipherElite Delivery Monitor
 #
-# يعمل داخل CipherElite باستخدام Telegram Client الأصلي
-# لا ينشئ Session جديدة
-# لا يغير main.py
-# لا يغير startup.py
-#
-# الوظائف:
-# - مراقبة الرسائل الجديدة في المجموعات
-# - فلترة طلبات التوصيل والمشاوير
-# - إرسال الطلبات إلى LOG_CHAT_ID
-# - اسم المستخدم قابل للضغط
+# - يستخدم Telegram Client الأصلي الخاص بـ CipherElite
+# - لا ينشئ Session جديدة
+# - لا ينشئ TelegramClient جديد
+# - يراقب الرسائل الواردة من المجموعات
+# - يلتقط رسائل المستخدمين الآخرين
+# - يفلتر طلبات التوصيل والمشاوير
+# - يرسل المطابق إلى LOG_CHAT_ID
+# - الاسم قابل للضغط
 # - Telegram ID قابل للضغط
-# - Username قابل للضغط إذا موجود
+# - Username قابل للضغط عند وجوده
 # - رابط الرسالة الأصلية
-# - تجاهل البوتات
-# - معالجة FloodWait
+# - يتجاهل البوتات
+# - يمنع تكرار معالجة نفس الرسالة
+# - يمنع معالجة قناة الإرسال نفسها
+# - يدعم FloodWait
+# - يحتوي على Logs للتشخيص
 # ============================================================
 
 import asyncio
 import logging
 import re
+import time
 from contextlib import suppress
 from html import escape
 
@@ -39,7 +41,7 @@ from config.config import Config
 # VERSION
 # ============================================================
 
-VERSION = "1.0.0"
+VERSION = "2.0.0"
 
 
 # ============================================================
@@ -67,15 +69,19 @@ TARGET_CHAT_ID = getattr(
 # ============================================================
 
 KEYWORDS = [
+
     "توصيل",
     "مشوار",
     "مشاوير",
+
     "من _الى",
     "من الى",
 
     "احتاج سيارة",
     "احتاج سواق",
     "احتاج سائق",
+
+    "احتاج",
 
     "شهري",
 
@@ -100,9 +106,15 @@ KEYWORDS = [
     "ابغى توصيل",
     "أبغى توصيل",
 
+    "احتاج توصيل",
+    "احتاج مواصلات",
+
+    "موصلات",
+
     "تواصل",
 
     "من رايحة",
+    "من رايحه",
 
     "تعرفون باص",
 
@@ -112,6 +124,9 @@ KEYWORDS = [
     "ابغى باص",
     "أبغى باص",
 
+    "ابي باص",
+    "أبي باص",
+
     "توصيل طلب",
 
     "يوصلني",
@@ -119,7 +134,25 @@ KEYWORDS = [
 
     "يوديني",
     "يوديني مشوار",
+
 ]
+
+
+# ============================================================
+# RUNTIME STATE
+# ============================================================
+
+# منع معالجة الرسالة نفسها أكثر من مرة
+processed_messages = set()
+
+# حد أقصى للذاكرة
+MAX_PROCESSED_MESSAGES = 20000
+
+# قفل الإرسال
+send_lock = asyncio.Lock()
+
+# وقت آخر Log تشخيصي
+last_debug_log = 0.0
 
 
 # ============================================================
@@ -127,54 +160,77 @@ KEYWORDS = [
 # ============================================================
 
 def normalize_text(text):
-    """
-    توحيد الحروف العربية والمسافات
-    لتقليل اختلافات الكتابة.
-    """
 
     if not text:
+
         return ""
 
-    text = str(text).lower()
+    text = str(
+        text
+    ).lower()
+
 
     replacements = {
+
         "أ": "ا",
         "إ": "ا",
         "آ": "ا",
         "ٱ": "ا",
+
         "ة": "ه",
         "ى": "ي",
+
     }
 
+
     for old, new in replacements.items():
+
         text = text.replace(
             old,
             new,
         )
 
+
+    # --------------------------------------------------------
     # إزالة التشكيل
+    # --------------------------------------------------------
+
     text = re.sub(
         r"[\u064B-\u065F\u0670]",
         "",
         text,
     )
 
+
+    # --------------------------------------------------------
     # توحيد المسافات
+    # --------------------------------------------------------
+
     text = re.sub(
         r"\s+",
         " ",
         text,
     )
 
+
     return text.strip()
 
 
+# ============================================================
+# NORMALIZED KEYWORDS
+# ============================================================
+
 NORMALIZED_KEYWORDS = [
+
     (
         original,
         normalize_text(original),
     )
+
     for original in KEYWORDS
+
+    if original
+
 ]
 
 
@@ -188,21 +244,28 @@ def matched_keywords(text):
         text
     )
 
+
     if not normalized:
+
         return []
 
+
     matches = []
+
 
     for original, keyword in NORMALIZED_KEYWORDS:
 
         if not keyword:
+
             continue
+
 
         if keyword in normalized:
 
             matches.append(
                 original
             )
+
 
     return list(
         dict.fromkeys(
@@ -212,13 +275,15 @@ def matched_keywords(text):
 
 
 # ============================================================
-# HTML ESCAPE
+# SAFE HTML
 # ============================================================
 
 def safe_text(value):
 
     if value is None:
+
         return ""
+
 
     return escape(
         str(value)
@@ -234,10 +299,15 @@ def build_user_info(sender):
     if sender is None:
 
         return (
+
             "مستخدم",
+
             "غير معروف",
+
             "🔗 بدون username",
+
             0,
+
         )
 
 
@@ -257,25 +327,36 @@ def build_user_info(sender):
     # --------------------------------------------------------
 
     first_name = (
+
         getattr(
             sender,
             "first_name",
             None,
         )
+
         or ""
+
     )
 
+
     last_name = (
+
         getattr(
             sender,
             "last_name",
             None,
         )
+
         or ""
+
     )
 
+
     full_name = (
-        f"{first_name} {last_name}"
+
+        f"{first_name} "
+        f"{last_name}"
+
     ).strip()
 
 
@@ -291,16 +372,26 @@ def build_user_info(sender):
     if user_id:
 
         clickable_name = (
+
             f'<a href="tg://user?id={user_id}">'
+
             f'{safe_text(full_name)}'
+
             f'</a>'
+
         )
 
+
         clickable_id = (
+
             f'<a href="tg://user?id={user_id}">'
+
             f'{user_id}'
+
             f'</a>'
+
         )
+
 
     else:
 
@@ -327,10 +418,15 @@ def build_user_info(sender):
     if username:
 
         username_line = (
+
             f'🔗 <a href="https://t.me/'
+
             f'{safe_text(username)}">'
+
             f'@{safe_text(username)}'
+
             f'</a>'
+
         )
 
     else:
@@ -341,10 +437,15 @@ def build_user_info(sender):
 
 
     return (
+
         clickable_name,
+
         clickable_id,
+
         username_line,
+
         user_id,
+
     )
 
 
@@ -359,6 +460,7 @@ def build_message_link(
 ):
 
     if not chat_id:
+
         return None
 
 
@@ -376,14 +478,18 @@ def build_message_link(
     if chat_username:
 
         return (
+
             f"https://t.me/"
+
             f"{chat_username}/"
+
             f"{message_id}"
+
         )
 
 
     # --------------------------------------------------------
-    # PRIVATE SUPERGROUP
+    # PRIVATE / SUPERGROUP
     # --------------------------------------------------------
 
     raw_chat_id = str(
@@ -399,10 +505,15 @@ def build_message_link(
             raw_chat_id[4:]
         )
 
+
         return (
+
             f"https://t.me/c/"
+
             f"{internal_id}/"
+
             f"{message_id}"
+
         )
 
 
@@ -410,7 +521,7 @@ def build_message_link(
 
 
 # ============================================================
-# BUILD MESSAGE
+# BUILD DELIVERY MESSAGE
 # ============================================================
 
 def build_delivery_message(
@@ -428,12 +539,15 @@ def build_delivery_message(
     if chat:
 
         chat_title = (
+
             getattr(
                 chat,
                 "title",
                 None,
             )
+
             or "مجموعة غير معروفة"
+
         )
 
     else:
@@ -452,13 +566,14 @@ def build_delivery_message(
         clickable_id,
         username_line,
         user_id,
+
     ) = build_user_info(
         sender
     )
 
 
     # --------------------------------------------------------
-    # SOURCE MESSAGE LINK
+    # MESSAGE LINK
     # --------------------------------------------------------
 
     message_link = build_message_link(
@@ -475,15 +590,21 @@ def build_delivery_message(
     if message_link:
 
         source_line = (
+
             f'🔗 <a href="{safe_text(message_link)}">'
+
             "الضغط للذهاب للرسالة الأصلية"
+
             "</a>"
+
         )
 
     else:
 
         source_line = (
+
             "🔗 رابط الرسالة الأصلية غير متاح"
+
         )
 
 
@@ -502,48 +623,124 @@ def build_delivery_message(
 
 
     # --------------------------------------------------------
-    # FINAL MESSAGE
+    # FINAL
     # --------------------------------------------------------
 
     message = (
 
         "╭━━━ 🚗 "
+
         "<b>طلب توصيل جديد</b> "
+
         "━━━╮\n\n"
+
 
         "📝 <b>نص الرسالة:</b>\n"
 
         f"{safe_text(text)}\n\n"
 
+
         "━━━━━━━━━━━━━━━━━━━━\n\n"
 
+
         f"👤 <b>الاسم:</b> "
+
         f"{clickable_name}\n"
 
+
         f"🆔 <b>الأيدي:</b> "
+
         f"{clickable_id}\n"
+
 
         f"{username_line}\n\n"
 
+
         f"📡 <b>المجموعة:</b> "
+
         f"{safe_text(chat_title)}\n"
 
+
         f"🆔 <b>أيدي المجموعة:</b> "
+
         f"<code>{event.chat_id}</code>\n\n"
+
 
         f"{source_line}\n\n"
 
+
         "━━━━━━━━━━━━━━━━━━━━\n\n"
+
 
         "🧲 <b>الكلمات المطابقة:</b>\n"
 
         f"{safe_text(keyword_text)}\n\n"
 
+
         "╰━━━━━━━━━━━━━━━━━━━━╯"
 
     )
 
+
     return message, user_id
+
+
+# ============================================================
+# MESSAGE KEY
+# ============================================================
+
+def get_message_key(event):
+
+    return (
+
+        int(event.chat_id or 0),
+
+        int(event.id or 0),
+
+    )
+
+
+# ============================================================
+# REMEMBER MESSAGE
+# ============================================================
+
+def remember_message(key):
+
+    processed_messages.add(
+        key
+    )
+
+
+    # --------------------------------------------------------
+    # منع تضخم الذاكرة
+    # --------------------------------------------------------
+
+    if len(
+        processed_messages
+    ) > MAX_PROCESSED_MESSAGES:
+
+        # حذف جزء من العناصر
+        # بشكل آمن وبسيط
+
+        amount = (
+
+            len(processed_messages)
+            - MAX_PROCESSED_MESSAGES
+
+        )
+
+
+        for _ in range(
+            max(amount, 1)
+        ):
+
+            try:
+
+                processed_messages.pop()
+
+            except KeyError:
+
+                break
 
 
 # ============================================================
@@ -555,10 +752,27 @@ async def process_delivery_message(
     event,
 ):
 
+    started = time.perf_counter()
+
+
     try:
 
         # ====================================================
-        # GROUPS ONLY
+        # IMPORTANT:
+        # Incoming messages only
+        # ====================================================
+
+        if getattr(
+            event,
+            "out",
+            False,
+        ):
+
+            return
+
+
+        # ====================================================
+        # GROUPS
         # ====================================================
 
         if not event.is_group:
@@ -567,12 +781,49 @@ async def process_delivery_message(
 
 
         # ====================================================
+        # TARGET CHAT
+        # ====================================================
+
+        # لا نعالج رسائل قناة الإرسال نفسها
+
+        if (
+            TARGET_CHAT_ID
+            and event.chat_id
+            == TARGET_CHAT_ID
+        ):
+
+            return
+
+
+        # ====================================================
+        # MESSAGE ID
+        # ====================================================
+
+        message_key = get_message_key(
+            event
+        )
+
+
+        if message_key in processed_messages:
+
+            return
+
+
+        remember_message(
+            message_key
+        )
+
+
+        # ====================================================
         # TEXT
         # ====================================================
 
         text = (
+
             event.raw_text
+
             or ""
+
         ).strip()
 
 
@@ -631,6 +882,16 @@ async def process_delivery_message(
                 False,
             ):
 
+                logger.info(
+
+                    "Ignored bot message | "
+
+                    f"chat={event.chat_id} | "
+
+                    f"message={event.id}"
+
+                )
+
                 return
 
 
@@ -662,14 +923,22 @@ async def process_delivery_message(
         # BUILD
         # ====================================================
 
-        final_message, user_id = (
-            build_delivery_message(
-                event,
-                text,
-                matches,
-                sender,
-                chat,
-            )
+        (
+            final_message,
+            user_id,
+
+        ) = build_delivery_message(
+
+            event,
+
+            text,
+
+            matches,
+
+            sender,
+
+            chat,
+
         )
 
 
@@ -677,26 +946,47 @@ async def process_delivery_message(
         # SEND
         # ====================================================
 
-        await client.send_message(
+        async with send_lock:
 
-            TARGET_CHAT_ID,
+            await client.send_message(
 
-            final_message,
+                TARGET_CHAT_ID,
 
-            parse_mode="html",
+                final_message,
 
-            link_preview=False,
+                parse_mode="html",
+
+                link_preview=False,
+
+            )
+
+
+        # ====================================================
+        # LOG
+        # ====================================================
+
+        elapsed = (
+
+            time.perf_counter()
+
+            - started
 
         )
 
 
         logger.info(
 
-            "Delivery message sent | "
+            "✅ DELIVERY SENT | "
+
             f"chat={event.chat_id} | "
+
             f"message={event.id} | "
+
             f"user={user_id} | "
-            f"keywords={matches}"
+
+            f"keywords={matches} | "
+
+            f"{elapsed:.3f}s"
 
         )
 
@@ -708,9 +998,14 @@ async def process_delivery_message(
             1,
         )
 
+
         logger.warning(
-            f"FloodWait: {seconds}s"
+
+            f"⏳ Telegram FloodWait: "
+            f"{seconds}s"
+
         )
+
 
         await asyncio.sleep(
             seconds
@@ -721,7 +1016,8 @@ async def process_delivery_message(
 
         logger.error(
 
-            f"Telegram RPC error: "
+            "❌ Telegram RPC error | "
+
             f"{type(e).__name__}: {e}"
 
         )
@@ -735,7 +1031,11 @@ async def process_delivery_message(
     except Exception as e:
 
         logger.exception(
-            f"Delivery monitor error: {e}"
+
+            "❌ Delivery monitor error | "
+
+            f"{type(e).__name__}: {e}"
+
         )
 
 
@@ -746,13 +1046,15 @@ async def process_delivery_message(
 def init(client):
 
     # --------------------------------------------------------
-    # CHECK TARGET
+    # TARGET CHECK
     # --------------------------------------------------------
 
     if not TARGET_CHAT_ID:
 
-        logger.warning(
-            "⚠️ LOG_CHAT_ID غير مضبوط."
+        logger.error(
+
+            "❌ LOG_CHAT_ID غير مضبوط."
+
         )
 
         return
@@ -760,21 +1062,49 @@ def init(client):
 
     # --------------------------------------------------------
     # EVENT HANDLER
+    #
+    # incoming=True مهم:
+    # يستقبل الرسائل الواردة من الآخرين.
     # --------------------------------------------------------
 
     @client.on(
-        events.NewMessage()
+        events.NewMessage(
+            incoming=True
+        )
     )
     async def delivery_handler(event):
 
-        await process_delivery_message(
-            client,
-            event,
-        )
+        try:
 
+            await process_delivery_message(
+
+                client,
+
+                event,
+
+            )
+
+        except Exception as e:
+
+            logger.exception(
+
+                "Unhandled delivery handler error: "
+
+                f"{e}"
+
+            )
+
+
+    # --------------------------------------------------------
+    # STARTUP LOG
+    # --------------------------------------------------------
 
     logger.info(
         "🚗 Delivery Monitor loaded successfully"
+    )
+
+    logger.info(
+        "👂 Monitoring INCOMING group messages"
     )
 
     logger.info(
@@ -783,4 +1113,12 @@ def init(client):
 
     logger.info(
         f"🧲 Keywords: {len(KEYWORDS)}"
+    )
+
+    logger.info(
+        "👤 Other users: ENABLED"
+    )
+
+    logger.info(
+        "🤖 Bots: IGNORED"
     )
